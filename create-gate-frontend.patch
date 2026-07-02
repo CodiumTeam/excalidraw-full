@@ -24,10 +24,10 @@ index 8c36fedb..d9740eab 100644
        );
 diff --git a/excalidraw-app/codiumAccessGate.ts b/excalidraw-app/codiumAccessGate.ts
 new file mode 100644
-index 00000000..1cea42ce
+index 00000000..371712b9
 --- /dev/null
 +++ b/excalidraw-app/codiumAccessGate.ts
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,88 @@
 +import { jwtDecode } from "jwt-decode";
 +
 +import { getCollaborationLinkData } from "./data";
@@ -63,6 +63,12 @@ index 00000000..1cea42ce
 +export const canAccessApp = async (): Promise<boolean> => {
 +  const params = new URLSearchParams(window.location.search);
 +  if (params.get("auth_error") === "unauthorized") {
++    return true;
++  }
++  if (params.get("token")) {
++    // Volvemos del callback de login: el token va en la URL y useAuth lo
++    // persistirá en localStorage. Dejar pasar (si no, se redirige a login en
++    // bucle porque aún no está en localStorage).
 +    return true;
 +  }
 +  if (isLoggedIn()) {
@@ -111,10 +117,10 @@ index 00000000..1cea42ce
 +  return true;
 +};
 diff --git a/excalidraw-app/index.html b/excalidraw-app/index.html
-index 7eac3e39..09407bbf 100644
+index 7eac3e39..c5bf396a 100644
 --- a/excalidraw-app/index.html
 +++ b/excalidraw-app/index.html
-@@ -2,6 +2,31 @@
+@@ -2,6 +2,34 @@
  <html lang="en">
    <head>
      <meta charset="utf-8" />
@@ -128,6 +134,9 @@ index 7eac3e39..09407bbf 100644
 +          var loc = window.location;
 +          var params = new URLSearchParams(loc.search);
 +          if (params.get("auth_error") === "unauthorized") {
++            return;
++          }
++          if (params.get("token")) {
 +            return;
 +          }
 +          if (localStorage.getItem("token")) {
