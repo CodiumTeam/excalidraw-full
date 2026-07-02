@@ -110,6 +110,42 @@ index 00000000..1cea42ce
 +  );
 +  return true;
 +};
+diff --git a/excalidraw-app/index.html b/excalidraw-app/index.html
+index 7eac3e39..09407bbf 100644
+--- a/excalidraw-app/index.html
++++ b/excalidraw-app/index.html
+@@ -2,6 +2,31 @@
+ <html lang="en">
+   <head>
+     <meta charset="utf-8" />
++    <!-- Codium access gate (síncrono, antes de cargar el bundle): un visitante
++         sin sesión que abre la app en blanco se redirige a login al instante,
++         sin ver el editor. Las salas/escenas (#room=/#json=/#url=) las decide la
++         app (comprueba si existen). Ser conservador: si hay token, dejar pasar. -->
++    <script>
++      (function () {
++        try {
++          var loc = window.location;
++          var params = new URLSearchParams(loc.search);
++          if (params.get("auth_error") === "unauthorized") {
++            return;
++          }
++          if (localStorage.getItem("token")) {
++            return;
++          }
++          var hash = loc.hash || "";
++          if (/#room=/.test(hash) || /^#json=/.test(hash) || /^#url=/.test(hash)) {
++            return;
++          }
++          loc.replace("/auth/login");
++        } catch (e) {
++          /* ante cualquier duda, dejar que la app decida */
++        }
++      })();
++    </script>
+     <title>
+       Free, collaborative whiteboard • Hand-drawn look & feel | Excalidraw
+     </title>
 diff --git a/excalidraw-app/index.tsx b/excalidraw-app/index.tsx
 index 98c902e3..70769749 100644
 --- a/excalidraw-app/index.tsx
@@ -141,3 +177,20 @@ index 98c902e3..70769749 100644
 +    </StrictMode>,
 +  );
 +});
+diff --git a/excalidraw-app/vite.config.mts b/excalidraw-app/vite.config.mts
+index 90739e45..9a0ec645 100644
+--- a/excalidraw-app/vite.config.mts
++++ b/excalidraw-app/vite.config.mts
+@@ -149,6 +149,12 @@ export default defineConfig(({ mode }) => {
+       ViteEjsPlugin(),
+       VitePWA({
+         registerType: "autoUpdate",
++        // Codium self-host: desactivamos el service worker. Un SW cacheaba
++        // versiones viejas y provocaba ver el editor unos segundos tras cada
++        // deploy (y complicaba el gate de acceso). selfDestroying publica un SW
++        // que se desregistra y limpia caches en quienes ya lo tenían. El offline
++        // no aporta en una herramienta interna con login y backend.
++        selfDestroying: true,
+         devOptions: {
+           /* set this flag to true to enable in Development mode */
+           enabled: envVars.VITE_APP_ENABLE_PWA === "true",
