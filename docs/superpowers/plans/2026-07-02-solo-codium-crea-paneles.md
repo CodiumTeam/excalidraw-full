@@ -159,14 +159,16 @@ En `excalidraw/excalidraw-app/App.tsx`, insertar estas funciones a nivel de mód
 // Codium access gate: usuarios sin sesión solo pueden abrir contenido EXISTENTE
 // (salas/escenas compartidas). El lienzo en blanco o una sala inexistente exigen
 // login. Gate blando (nivel de app).
+// NOTA: usar jwt-decode (maneja base64url); `atob` lanza con `-`/`_`.
+// Requiere `import { jwtDecode } from "jwt-decode";` (ya es dependencia de excalidraw-app).
 const isLoggedIn = (): boolean => {
   const token = localStorage.getItem("token");
   if (!token) {
     return false;
   }
   try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
-    return typeof payload.exp === "number" && payload.exp * 1000 > Date.now();
+    const decoded = jwtDecode<{ exp?: number }>(token);
+    return typeof decoded.exp === "number" && decoded.exp * 1000 > Date.now();
   } catch {
     return false;
   }

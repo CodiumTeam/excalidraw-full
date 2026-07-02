@@ -1,17 +1,19 @@
 diff --git a/excalidraw-app/App.tsx b/excalidraw-app/App.tsx
-index 8c36fedb..37241f87 100644
+index 8c36fedb..13c78f81 100644
 --- a/excalidraw-app/App.tsx
 +++ b/excalidraw-app/App.tsx
-@@ -139,7 +139,7 @@ import {
+@@ -139,7 +139,9 @@ import {
    importUsernameFromLocalStorage,
  } from "./data/localStorage";
  
 -import { loadFilesFromFirebase } from "./data/firebase";
++import { jwtDecode } from "jwt-decode";
++
 +import { loadFilesFromFirebase, loadFromFirebase } from "./data/firebase";
  import {
    LibraryIndexedDBAdapter,
    LibraryLocalStorageMigrationAdapter,
-@@ -241,6 +241,65 @@ const shareableLinkConfirmDialog = {
+@@ -241,6 +243,66 @@ const shareableLinkConfirmDialog = {
    color: "danger",
  } as const;
  
@@ -24,8 +26,9 @@ index 8c36fedb..37241f87 100644
 +    return false;
 +  }
 +  try {
-+    const payload = JSON.parse(atob(token.split(".")[1]));
-+    return typeof payload.exp === "number" && payload.exp * 1000 > Date.now();
++    // jwt-decode maneja base64url correctamente (atob no).
++    const decoded = jwtDecode<{ exp?: number }>(token);
++    return typeof decoded.exp === "number" && decoded.exp * 1000 > Date.now();
 +  } catch {
 +    return false;
 +  }
@@ -77,7 +80,7 @@ index 8c36fedb..37241f87 100644
  const initializeScene = async (opts: {
    collabAPI: CollabAPI | null;
    excalidrawAPI: ExcalidrawImperativeAPI;
-@@ -605,6 +664,9 @@ const ExcalidrawWrapper = () => {
+@@ -605,6 +667,9 @@ const ExcalidrawWrapper = () => {
      };
  
      const loadCanvas = async () => {
