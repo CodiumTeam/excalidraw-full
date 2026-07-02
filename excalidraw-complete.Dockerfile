@@ -12,6 +12,10 @@ COPY room-files-frontend.patch ./
 # context, which makes `git apply` fail with "not a git repository" (exit 128).
 # Removing it lets git apply operate on the plain files.
 RUN cd excalidraw && rm -f .git && git apply ../room-files-frontend.patch
+# Codium access gate: unauthenticated users may only open existing rooms/scenes.
+# (.git already removed above.)
+COPY create-gate-frontend.patch ./
+RUN cd excalidraw && git apply ../create-gate-frontend.patch
 # 构建前端
 RUN cd excalidraw && npm install -g pnpm && pnpm install && cd excalidraw-app && DISABLE_VITE_CHECKER=true pnpm build:app:docker
 

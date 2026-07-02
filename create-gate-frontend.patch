@@ -1,0 +1,89 @@
+diff --git a/excalidraw-app/App.tsx b/excalidraw-app/App.tsx
+index 8c36fedb..37241f87 100644
+--- a/excalidraw-app/App.tsx
++++ b/excalidraw-app/App.tsx
+@@ -139,7 +139,7 @@ import {
+   importUsernameFromLocalStorage,
+ } from "./data/localStorage";
+ 
+-import { loadFilesFromFirebase } from "./data/firebase";
++import { loadFilesFromFirebase, loadFromFirebase } from "./data/firebase";
+ import {
+   LibraryIndexedDBAdapter,
+   LibraryLocalStorageMigrationAdapter,
+@@ -241,6 +241,65 @@ const shareableLinkConfirmDialog = {
+   color: "danger",
+ } as const;
+ 
++// Codium access gate: usuarios sin sesión solo pueden abrir contenido EXISTENTE
++// (salas/escenas compartidas). El lienzo en blanco o una sala inexistente exigen
++// login. Gate blando (nivel de app).
++const isLoggedIn = (): boolean => {
++  const token = localStorage.getItem("token");
++  if (!token) {
++    return false;
++  }
++  try {
++    const payload = JSON.parse(atob(token.split(".")[1]));
++    return typeof payload.exp === "number" && payload.exp * 1000 > Date.now();
++  } catch {
++    return false;
++  }
++};
++
++const enforceCodiumAccessGate = async (
++  setErrorMessage: (msg: string) => void,
++): Promise<boolean> => {
++  const params = new URLSearchParams(window.location.search);
++  if (params.get("auth_error") === "unauthorized") {
++    setErrorMessage(
++      "Tu cuenta de GitHub no está autorizada para crear paneles en Codium.",
++    );
++    params.delete("auth_error");
++    const qs = params.toString();
++    window.history.replaceState(
++      {},
++      document.title,
++      window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
++    );
++    return false;
++  }
++  if (isLoggedIn()) {
++    return true;
++  }
++  const roomLinkData = getCollaborationLinkData(window.location.href);
++  if (roomLinkData) {
++    try {
++      const scene = await loadFromFirebase(
++        roomLinkData.roomId,
++        roomLinkData.roomKey,
++        null,
++      );
++      if (scene) {
++        return true;
++      }
++    } catch {
++      // no se pudo cargar → tratar como inexistente
++    }
++  }
++  const hash = window.location.hash;
++  if (/^#json=/.test(hash) || /^#url=/.test(hash)) {
++    return true;
++  }
++  window.location.href = "/auth/login";
++  return false;
++};
++
+ const initializeScene = async (opts: {
+   collabAPI: CollabAPI | null;
+   excalidrawAPI: ExcalidrawImperativeAPI;
+@@ -605,6 +664,9 @@ const ExcalidrawWrapper = () => {
+     };
+ 
+     const loadCanvas = async () => {
++      if (!(await enforceCodiumAccessGate(setErrorMessage))) {
++        return;
++      }
+       const jsonMatch = window.location.hash.match(
+         /^#json=([a-zA-Z0-9_-]+),([a-zA-Z0-9_-]+)$/,
+       );
