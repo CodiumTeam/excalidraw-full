@@ -1,26 +1,47 @@
 diff --git a/excalidraw-app/App.tsx b/excalidraw-app/App.tsx
-index 8c36fedb..13c78f81 100644
+index 8c36fedb..d9740eab 100644
 --- a/excalidraw-app/App.tsx
 +++ b/excalidraw-app/App.tsx
-@@ -139,7 +139,9 @@ import {
-   importUsernameFromLocalStorage,
+@@ -140,6 +140,7 @@ import {
  } from "./data/localStorage";
  
--import { loadFilesFromFirebase } from "./data/firebase";
-+import { jwtDecode } from "jwt-decode";
-+
-+import { loadFilesFromFirebase, loadFromFirebase } from "./data/firebase";
+ import { loadFilesFromFirebase } from "./data/firebase";
++import { consumeAuthError } from "./codiumAccessGate";
  import {
    LibraryIndexedDBAdapter,
    LibraryLocalStorageMigrationAdapter,
-@@ -241,6 +243,66 @@ const shareableLinkConfirmDialog = {
-   color: "danger",
- } as const;
+@@ -605,6 +606,11 @@ const ExcalidrawWrapper = () => {
+     };
  
+     const loadCanvas = async () => {
++      // El acceso ya se decidió antes de renderizar (index.tsx). Aquí solo se
++      // muestra el aviso si el usuario vuelve de un login rechazado.
++      if (consumeAuthError(setErrorMessage)) {
++        return;
++      }
+       const jsonMatch = window.location.hash.match(
+         /^#json=([a-zA-Z0-9_-]+),([a-zA-Z0-9_-]+)$/,
+       );
+diff --git a/excalidraw-app/codiumAccessGate.ts b/excalidraw-app/codiumAccessGate.ts
+new file mode 100644
+index 00000000..1cea42ce
+--- /dev/null
++++ b/excalidraw-app/codiumAccessGate.ts
+@@ -0,0 +1,82 @@
++import { jwtDecode } from "jwt-decode";
++
++import { getCollaborationLinkData } from "./data";
++import { loadFromFirebase } from "./data/firebase";
++
 +// Codium access gate: usuarios sin sesión solo pueden abrir contenido EXISTENTE
 +// (salas/escenas compartidas). El lienzo en blanco o una sala inexistente exigen
-+// login. Gate blando (nivel de app).
-+const isLoggedIn = (): boolean => {
++// login. Gate blando (nivel de app), evaluado ANTES de renderizar para no
++// mostrar el editor a visitantes no autenticados.
++
++const UNAUTHORIZED_MESSAGE =
++  "Tu cuenta de GitHub no está autorizada para crear paneles en Codium.";
++
++export const isLoggedIn = (): boolean => {
 +  const token = localStorage.getItem("token");
 +  if (!token) {
 +    return false;
@@ -34,22 +55,15 @@ index 8c36fedb..13c78f81 100644
 +  }
 +};
 +
-+const enforceCodiumAccessGate = async (
-+  setErrorMessage: (msg: string) => void,
-+): Promise<boolean> => {
++// Decide el acceso ANTES de renderizar. Devuelve false y redirige a login cuando
++// un visitante anónimo intenta llegar al lienzo en blanco o a una sala
++// inexistente. Devuelve true (renderizar) para usuarios logueados, salas/escenas
++// existentes, o un rebote de login rechazado (?auth_error), que la app muestra
++// luego con consumeAuthError.
++export const canAccessApp = async (): Promise<boolean> => {
 +  const params = new URLSearchParams(window.location.search);
 +  if (params.get("auth_error") === "unauthorized") {
-+    setErrorMessage(
-+      "Tu cuenta de GitHub no está autorizada para crear paneles en Codium.",
-+    );
-+    params.delete("auth_error");
-+    const qs = params.toString();
-+    window.history.replaceState(
-+      {},
-+      document.title,
-+      window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
-+    );
-+    return false;
++    return true;
 +  }
 +  if (isLoggedIn()) {
 +    return true;
@@ -77,16 +91,53 @@ index 8c36fedb..13c78f81 100644
 +  return false;
 +};
 +
- const initializeScene = async (opts: {
-   collabAPI: CollabAPI | null;
-   excalidrawAPI: ExcalidrawImperativeAPI;
-@@ -605,6 +667,9 @@ const ExcalidrawWrapper = () => {
-     };
++// Si el visitante vuelve de un login rechazado, muestra el mensaje y limpia el
++// query param. Devuelve true si mostró mensaje.
++export const consumeAuthError = (
++  setErrorMessage: (message: string) => void,
++): boolean => {
++  const params = new URLSearchParams(window.location.search);
++  if (params.get("auth_error") !== "unauthorized") {
++    return false;
++  }
++  setErrorMessage(UNAUTHORIZED_MESSAGE);
++  params.delete("auth_error");
++  const qs = params.toString();
++  window.history.replaceState(
++    {},
++    document.title,
++    window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash,
++  );
++  return true;
++};
+diff --git a/excalidraw-app/index.tsx b/excalidraw-app/index.tsx
+index 98c902e3..70769749 100644
+--- a/excalidraw-app/index.tsx
++++ b/excalidraw-app/index.tsx
+@@ -5,13 +5,21 @@ import { registerSW } from "virtual:pwa-register";
+ import "../excalidraw-app/sentry";
  
-     const loadCanvas = async () => {
-+      if (!(await enforceCodiumAccessGate(setErrorMessage))) {
-+        return;
-+      }
-       const jsonMatch = window.location.hash.match(
-         /^#json=([a-zA-Z0-9_-]+),([a-zA-Z0-9_-]+)$/,
-       );
+ import ExcalidrawApp from "./App";
++import { canAccessApp } from "./codiumAccessGate";
+ 
+ window.__EXCALIDRAW_SHA__ = import.meta.env.VITE_APP_GIT_SHA;
+ const rootElement = document.getElementById("root")!;
+ const root = createRoot(rootElement);
+ registerSW();
+-root.render(
+-  <StrictMode>
+-    <ExcalidrawApp />
+-  </StrictMode>,
+-);
++// Gate de acceso ANTES de renderizar: evita el flash del editor a visitantes no
++// autenticados. Si no procede, canAccessApp() ya ha redirigido a login.
++canAccessApp().then((allowed) => {
++  if (!allowed) {
++    return;
++  }
++  root.render(
++    <StrictMode>
++      <ExcalidrawApp />
++    </StrictMode>,
++  );
++});
