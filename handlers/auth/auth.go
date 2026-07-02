@@ -199,7 +199,19 @@ func HandleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := githubOauthConfig.Client(context.Background(), token)
-	resp, err := client.Get("https://api.github.com/user")
+	// GitHub's API requires a User-Agent header, otherwise it responds 403 and
+	// the body has no "login" (which then breaks the ALLOWED_CREATORS check).
+	req, err := http.NewRequestWithContext(
+		context.Background(), http.MethodGet, "https://api.github.com/user", nil,
+	)
+	if err != nil {
+		logrus.Errorf("failed to build github user request: %s", err.Error())
+		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+		return
+	}
+	req.Header.Set("User-Agent", "excalidraw-codium")
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := client.Do(req)
 	if err != nil {
 		logrus.Errorf("failed to get user from github: %s", err.Error())
 		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
@@ -210,6 +222,12 @@ func HandleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logrus.Errorf("failed to read github response body: %s", err.Error())
+		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		logrus.Errorf("github /user returned %d: %s", resp.StatusCode, string(body))
 		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 		return
 	}
