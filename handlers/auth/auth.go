@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -226,6 +227,12 @@ func HandleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !isLoginAllowed(githubUser.Login) {
+		logrus.Warnf("login not allowed to create: %s", githubUser.Login)
+		http.Redirect(w, r, "/?auth_error=unauthorized", http.StatusTemporaryRedirect)
+		return
+	}
+
 	// Create user object using Subject instead of GitHubID
 	user := &core.User{
 		Subject:   fmt.Sprintf("github:%d", githubUser.ID),
@@ -374,4 +381,20 @@ func ParseJWT(tokenString string) (*AppClaims, error) {
 	}
 
 	return nil, fmt.Errorf("invalid token")
+}
+
+// isLoginAllowed reports whether a GitHub login may obtain a session. The
+// allow-list comes from ALLOWED_CREATORS (comma-separated logins). Empty/unset
+// disables the restriction (anti-lockout): everyone is allowed.
+func isLoginAllowed(login string) bool {
+	raw := strings.TrimSpace(os.Getenv("ALLOWED_CREATORS"))
+	if raw == "" {
+		return true
+	}
+	for _, entry := range strings.Split(raw, ",") {
+		if strings.EqualFold(strings.TrimSpace(entry), strings.TrimSpace(login)) {
+			return true
+		}
+	}
+	return false
 }
