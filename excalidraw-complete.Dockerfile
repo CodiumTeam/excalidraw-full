@@ -8,7 +8,10 @@ COPY excalidraw/ ./excalidraw/
 # `git apply` fails the build loudly if the submodule is bumped and the patch no
 # longer applies — that is intentional (keep the patch stable).
 COPY room-files-frontend.patch ./
-RUN cd excalidraw && git apply ../room-files-frontend.patch
+# Drop the submodule gitlink first: the copied `.git` points outside the build
+# context, which makes `git apply` fail with "not a git repository" (exit 128).
+# Removing it lets git apply operate on the plain files.
+RUN cd excalidraw && rm -f .git && git apply ../room-files-frontend.patch
 # 构建前端
 RUN cd excalidraw && npm install -g pnpm && pnpm install && cd excalidraw-app && DISABLE_VITE_CHECKER=true pnpm build:app:docker
 
