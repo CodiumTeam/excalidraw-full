@@ -1,0 +1,55 @@
+diff --git a/excalidraw-app/data/firebase.ts b/excalidraw-app/data/firebase.ts
+index 4e4c60b2..57ae47f6 100644
+--- a/excalidraw-app/data/firebase.ts
++++ b/excalidraw-app/data/firebase.ts
+@@ -149,19 +149,28 @@ export const saveFilesToFirebase = async ({
+   prefix: string;
+   files: { id: FileId; buffer: Uint8Array }[];
+ }) => {
+-  const storage = await loadFirebaseStorage();
+-
+   const erroredFiles: FileId[] = [];
+   const savedFiles: FileId[] = [];
+ 
++  // Self-hosted: persist room files on our own backend instead of Firebase
++  // Storage. The buffer is already encrypted+compressed client-side, so the
++  // server just stores an opaque blob. Mirrors the scene persistence patch.
+   await Promise.all(
+     files.map(async ({ id, buffer }) => {
+       try {
+-        const storageRef = ref(storage, `${prefix}/${id}`);
+-        await uploadBytes(storageRef, buffer, {
+-          cacheControl: `public, max-age=${FILE_CACHE_MAX_AGE_SEC}`,
+-        });
+-        savedFiles.push(id);
++        const response = await fetch(
++          `/api/v2/${prefix.replace(/^\//, "")}/${id}`,
++          {
++            method: "PUT",
++            headers: { "Content-Type": "application/octet-stream" },
++            body: buffer,
++          },
++        );
++        if (response.ok) {
++          savedFiles.push(id);
++        } else {
++          erroredFiles.push(id);
++        }
+       } catch (error: any) {
+         erroredFiles.push(id);
+       }
+@@ -282,10 +291,10 @@ export const loadFilesFromFirebase = async (
+   await Promise.all(
+     [...new Set(filesIds)].map(async (id) => {
+       try {
+-        const url = `https://firebasestorage.googleapis.com/v0/b/${
+-          FIREBASE_CONFIG.storageBucket
+-        }/o/${encodeURIComponent(prefix.replace(/^\//, ""))}%2F${id}`;
+-        const response = await fetch(`${url}?alt=media`);
++        // Self-hosted: read room files from our own backend (see
++        // saveFilesToFirebase) instead of Firebase Storage.
++        const url = `/api/v2/${prefix.replace(/^\//, "")}/${id}`;
++        const response = await fetch(url);
+         if (response.status < 400) {
+           const arrayBuffer = await response.arrayBuffer();
+ 

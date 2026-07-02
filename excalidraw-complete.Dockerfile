@@ -3,6 +3,12 @@ FROM --platform=$BUILDPLATFORM node:18 AS frontend-builder
 WORKDIR /app
 # 复制 excalidraw 子模块
 COPY excalidraw/ ./excalidraw/
+# Self-hosted patch: persist room files (images) on our own backend instead of
+# Firebase Storage. Applied at build time so the submodule stays pristine.
+# `git apply` fails the build loudly if the submodule is bumped and the patch no
+# longer applies — that is intentional (keep the patch stable).
+COPY room-files-frontend.patch ./
+RUN cd excalidraw && git apply ../room-files-frontend.patch
 # 构建前端
 RUN cd excalidraw && npm install -g pnpm && pnpm install && cd excalidraw-app && DISABLE_VITE_CHECKER=true pnpm build:app:docker
 

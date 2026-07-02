@@ -4,6 +4,7 @@ import (
 	"embed"
 	_ "embed"
 	"excalidraw-complete/handlers/api/documents"
+	"excalidraw-complete/handlers/api/files"
 	"excalidraw-complete/handlers/api/firebase"
 	"excalidraw-complete/handlers/api/kv"
 	"excalidraw-complete/handlers/api/openai"
@@ -158,6 +159,11 @@ func setupRouter(store stores.Store) *chi.Mux {
 				r.Post("/completions", openai.HandleChatCompletion())
 			})
 		})
+
+		// Room files (images) for shared "#room=" links. Anonymous like the
+		// scene endpoints; content is opaque (encrypted client-side).
+		r.Put("/files/rooms/{roomId}/{fileId}", files.HandlePut())
+		r.Get("/files/rooms/{roomId}/{fileId}", files.HandleGet())
 
 		// Old routes for anonymous document sharing
 		r.Post("/post/", documents.HandleCreate(store))
