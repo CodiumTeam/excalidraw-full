@@ -18,8 +18,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -195,32 +199,35 @@ func setupSocketIO() *socketio.Server {
 		socket := clients[0].(*socketio.Socket)
 		me := socket.Id()
 		myRoom := socketio.Room(me)
+
+		// Track liveness: bump a timestamp on every packet (including ping/pong) so
+		// the reconciler can detect sockets that went silent even when their
+		// transport was never marked closed (e.g. a connection wedged behind a proxy).
+		touch := func(...any) { socketActivity.Store(me, time.Now()) }
+		touch()
+		socket.Conn().On("packet", touch)
+		socket.Conn().On("heartbeat", touch)
+
 		ioo.To(myRoom).Emit("init-room")
 		utils.Log().Println("init room ", myRoom)
 		socket.On("join-room", func(datas ...any) {
 			room := socketio.Room(datas[0].(string))
 			utils.Log().Printf("Socket %v has joined %v\n", me, room)
 			socket.Join(room)
-			ioo.In(room).FetchSockets()(func(usersInRoom []*socketio.RemoteSocket, _ error) {
-				if len(usersInRoom) <= 1 {
-					ioo.To(myRoom).Emit("first-in-room")
-				} else {
-					utils.Log().Printf("emit new user %v in room %v\n", me, room)
-					socket.Broadcast().To(room).Emit("new-user", me)
-				}
 
-				// Inform all clients by new users.
-				newRoomUsers := []socketio.SocketId{}
-				for _, user := range usersInRoom {
-					newRoomUsers = append(newRoomUsers, user.Id())
-				}
-				utils.Log().Println(" room ", room, " has users ", newRoomUsers)
-				ioo.In(room).Emit(
-					"room-user-change",
-					newRoomUsers,
-				)
-
-			})
+			// Build the member list from sockets whose transport is still open,
+			// so ghost connections (transport closed but socket.io's disconnect
+			// lifecycle never completed) don't inflate the collaborator count that
+			// every client renders from room-user-change. See reconcileRooms.
+			roomUsers := liveRoomUsers(ioo, room, "")
+			if len(roomUsers) <= 1 {
+				ioo.To(myRoom).Emit("first-in-room")
+			} else {
+				utils.Log().Printf("emit new user %v in room %v\n", me, room)
+				socket.Broadcast().To(room).Emit("new-user", me)
+			}
+			utils.Log().Println(" room ", room, " has users ", roomUsers)
+			ioo.In(room).Emit("room-user-change", roomUsers)
 		})
 		socket.On("server-broadcast", func(datas ...any) {
 			roomID := datas[0].(string)
@@ -239,35 +246,163 @@ func setupSocketIO() *socketio.Server {
 		})
 		socket.On("disconnecting", func(datas ...any) {
 			for _, currentRoom := range socket.Rooms().Keys() {
-				ioo.In(currentRoom).FetchSockets()(func(usersInRoom []*socketio.RemoteSocket, _ error) {
-					otherClients := []socketio.SocketId{}
-					utils.Log().Printf("disconnecting %v from room %v\n", me, currentRoom)
-					for _, userInRoom := range usersInRoom {
-						if userInRoom.Id() != me {
-							otherClients = append(otherClients, userInRoom.Id())
-						}
-					}
-					if len(otherClients) > 0 {
-						utils.Log().Printf("leaving user, room %v has users  %v\n", currentRoom, otherClients)
-						ioo.In(currentRoom).Emit(
-							"room-user-change",
-							otherClients,
-						)
-
-					}
-
-				})
-
+				if currentRoom == socketio.Room(me) {
+					continue // skip the socket's own personal room
+				}
+				utils.Log().Printf("disconnecting %v from room %v\n", me, currentRoom)
+				otherClients := liveRoomUsers(ioo, currentRoom, me)
+				if len(otherClients) > 0 {
+					utils.Log().Printf("leaving user, room %v has users  %v\n", currentRoom, otherClients)
+					ioo.In(currentRoom).Emit("room-user-change", otherClients)
+				}
 			}
-
 		})
 		socket.On("disconnect", func(datas ...any) {
+			socketActivity.Delete(me)
 			socket.RemoveAllListeners("")
 			socket.Disconnect(true)
 		})
 	})
+
+	// Safety net: prune ghost sockets and re-broadcast room membership on an
+	// interval, so the collaborator count self-heals even when a client's
+	// disconnect lifecycle never fires (backgrounded tab, dropped Wi-Fi).
+	ghostStaleAfter = ghostStaleThreshold()
+	go reconcileRoomsLoop(ioo)
+
 	return ioo
 
+}
+
+// lastRoomUsers remembers the last member list broadcast per room (as a sorted
+// CSV of socket IDs) so reconcileRooms only re-emits when the set truly changes.
+var lastRoomUsers sync.Map
+
+// socketActivity records the last time each socket sent any packet (including
+// heartbeats). Sockets silent past ghostStaleAfter are treated as dead even if
+// their transport was never marked closed.
+var socketActivity sync.Map
+
+// ghostStaleAfter is how long a socket may go without any packet before the
+// reconciler treats it as a ghost. Kept above the engine.io ping interval+timeout
+// (25s+20s) so healthy idle clients are never dropped. Overridable via
+// GHOST_STALE_SECONDS (used by tests to force fast detection).
+var ghostStaleAfter = 60 * time.Second
+
+func ghostStaleThreshold() time.Duration {
+	if v := os.Getenv("GHOST_STALE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 60 * time.Second
+}
+
+// isSocketLive reports whether a socket should still count as present in a room:
+// its transport must be open and it must have shown activity recently. This
+// catches both ghost shapes seen in production — transport closed but the
+// disconnect lifecycle never fired, and a wedged connection that stopped
+// responding but was never marked closed.
+func isSocketLive(sock *socketio.Socket, id socketio.SocketId) bool {
+	if sock.Conn().ReadyState() != "open" {
+		return false
+	}
+	if v, ok := socketActivity.Load(id); ok {
+		if time.Since(v.(time.Time)) > ghostStaleAfter {
+			return false
+		}
+	}
+	return true
+}
+
+// liveRoomUsers returns the IDs of sockets currently in `room` that are still
+// live (see isSocketLive), excluding `except`. Ghost connections are skipped so
+// they don't inflate the collaborator count that every client renders from the
+// room-user-change event.
+func liveRoomUsers(ioo *socketio.Server, room socketio.Room, except socketio.SocketId) []socketio.SocketId {
+	nsp := ioo.Sockets()
+	live := []socketio.SocketId{}
+	members, ok := nsp.Adapter().Rooms().Load(room)
+	if !ok {
+		return live
+	}
+	sockets := nsp.Sockets()
+	for _, id := range members.Keys() {
+		if id == except {
+			continue
+		}
+		if sock, ok := sockets.Load(id); ok && isSocketLive(sock, id) {
+			live = append(live, id)
+		}
+	}
+	return live
+}
+
+// reconcileRoomsLoop runs reconcileRooms on a fixed interval for the lifetime of
+// the server.
+func reconcileRoomsLoop(ioo *socketio.Server) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		reconcileRooms(ioo)
+	}
+}
+
+// reconcileRooms disconnects dead ghost sockets and, for every shared room whose
+// live membership changed since the last sweep, re-broadcasts room-user-change.
+// This is the safety net for ungraceful disconnects that never fire socket.io's
+// disconnect lifecycle, which would otherwise leave stale sockets in the room
+// forever and steadily inflate the collaborator count.
+func reconcileRooms(ioo *socketio.Server) {
+	nsp := ioo.Sockets()
+	sockets := nsp.Sockets()
+	dead := []*socketio.Socket{}
+	nsp.Adapter().Rooms().Range(func(room socketio.Room, members *types.Set[socketio.SocketId]) bool {
+		// Skip personal rooms (a room named after a socket's own id).
+		if _, isPersonal := sockets.Load(socketio.SocketId(room)); isPersonal {
+			return true
+		}
+		live := []socketio.SocketId{}
+		for _, id := range members.Keys() {
+			sock, ok := sockets.Load(id)
+			if !ok {
+				continue
+			}
+			if isSocketLive(sock, id) {
+				live = append(live, id)
+			} else {
+				dead = append(dead, sock) // disconnected after the range, see below
+			}
+		}
+		if len(live) == 0 {
+			lastRoomUsers.Delete(room)
+			return true
+		}
+		key := roomUsersKey(live)
+		if prev, ok := lastRoomUsers.Load(room); ok && prev.(string) == key {
+			return true
+		}
+		lastRoomUsers.Store(room, key)
+		utils.Log().Println(" reconcile room ", room, " live users ", live)
+		ioo.In(room).Emit("room-user-change", live)
+		return true
+	})
+	// Disconnect ghosts after ranging, so their disconnect lifecycle can't mutate
+	// the adapter rooms we are still iterating.
+	for _, sock := range dead {
+		socketActivity.Delete(sock.Id())
+		sock.Disconnect(true)
+	}
+}
+
+// roomUsersKey returns a stable, order-independent key for a set of socket IDs.
+func roomUsersKey(ids []socketio.SocketId) string {
+	s := make([]string, len(ids))
+	for i, id := range ids {
+		s[i] = string(id)
+	}
+	sort.Strings(s)
+	return strings.Join(s, ",")
 }
 
 func waitForShutdown(ioo *socketio.Server) {
