@@ -24,10 +24,10 @@ index 8c36fedb..d9740eab 100644
        );
 diff --git a/excalidraw-app/codiumAccessGate.ts b/excalidraw-app/codiumAccessGate.ts
 new file mode 100644
-index 0000000..dfc9059
+index 0000000..1f27978
 --- /dev/null
 +++ b/excalidraw-app/codiumAccessGate.ts
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,112 @@
 +import { jwtDecode } from "jwt-decode";
 +
 +import { getCollaborationLinkData } from "./data";
@@ -69,10 +69,13 @@ index 0000000..dfc9059
 +  if (!projectId) {
 +    return false;
 +  }
-+  const base = `/v1/projects/${projectId}/databases/(default)/documents`;
-+  const name = `${base}/scenes/${roomId}`;
++  // OJO: el nombre de recurso del documento NO lleva prefijo `/v1/` (ese prefijo
++  // es solo del path HTTP). Debe coincidir EXACTAMENTE con la key que guarda el
++  // SDK de Firebase al hacer commit, o el backend responde `missing`.
++  const docs = `projects/${projectId}/databases/(default)/documents`;
++  const name = `${docs}/scenes/${roomId}`;
 +  try {
-+    const res = await fetch(`${base}:batchGet`, {
++    const res = await fetch(`/v1/${docs}:batchGet`, {
 +      method: "POST",
 +      headers: { "Content-Type": "text/plain" },
 +      body: JSON.stringify({ documents: [name] }),
