@@ -24,14 +24,13 @@ index 8c36fedb..d9740eab 100644
        );
 diff --git a/excalidraw-app/codiumAccessGate.ts b/excalidraw-app/codiumAccessGate.ts
 new file mode 100644
-index 00000000..371712b9
+index 0000000..dfc9059
 --- /dev/null
 +++ b/excalidraw-app/codiumAccessGate.ts
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,109 @@
 +import { jwtDecode } from "jwt-decode";
 +
 +import { getCollaborationLinkData } from "./data";
-+import { loadFromFirebase } from "./data/firebase";
 +
 +// Codium access gate: usuarios sin sesión solo pueden abrir contenido EXISTENTE
 +// (salas/escenas compartidas). El lienzo en blanco o una sala inexistente exigen
@@ -50,6 +49,39 @@ index 00000000..371712b9
 +    // jwt-decode maneja base64url correctamente (atob no).
 +    const decoded = jwtDecode<{ exp?: number }>(token);
 +    return typeof decoded.exp === "number" && decoded.exp * 1000 > Date.now();
++  } catch {
++    return false;
++  }
++};
++
++// Comprueba si una sala de colaboración EXISTE en el backend. Usa el endpoint
++// REST `documents:batchGet` (el único que implementa el backend self-hosted),
++// NO el SDK de Firebase: su getDoc abre un canal WebChannel "Listen" que el
++// backend no sirve (404) y haría fallar siempre la comprobación. El contenido va
++// cifrado con la roomKey; aquí solo nos interesa si existe, no descifrarlo.
++const roomExists = async (roomId: string): Promise<boolean> => {
++  let projectId = "";
++  try {
++    projectId = JSON.parse(import.meta.env.VITE_APP_FIREBASE_CONFIG).projectId;
++  } catch {
++    return false;
++  }
++  if (!projectId) {
++    return false;
++  }
++  const base = `/v1/projects/${projectId}/databases/(default)/documents`;
++  const name = `${base}/scenes/${roomId}`;
++  try {
++    const res = await fetch(`${base}:batchGet`, {
++      method: "POST",
++      headers: { "Content-Type": "text/plain" },
++      body: JSON.stringify({ documents: [name] }),
++    });
++    if (!res.ok) {
++      return false;
++    }
++    const data = await res.json();
++    return Array.isArray(data) && data.some((entry) => entry && entry.found);
 +  } catch {
 +    return false;
 +  }
@@ -75,19 +107,8 @@ index 00000000..371712b9
 +    return true;
 +  }
 +  const roomLinkData = getCollaborationLinkData(window.location.href);
-+  if (roomLinkData) {
-+    try {
-+      const scene = await loadFromFirebase(
-+        roomLinkData.roomId,
-+        roomLinkData.roomKey,
-+        null,
-+      );
-+      if (scene) {
-+        return true;
-+      }
-+    } catch {
-+      // no se pudo cargar → tratar como inexistente
-+    }
++  if (roomLinkData && (await roomExists(roomLinkData.roomId))) {
++    return true;
 +  }
 +  const hash = window.location.hash;
 +  if (/^#json=/.test(hash) || /^#url=/.test(hash)) {
