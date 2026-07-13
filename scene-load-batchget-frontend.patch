@@ -1,0 +1,72 @@
+diff --git a/excalidraw-app/data/firebase.ts b/excalidraw-app/data/firebase.ts
+index 57ae47f6..d2b76f6a 100644
+--- a/excalidraw-app/data/firebase.ts
++++ b/excalidraw-app/data/firebase.ts
+@@ -11,7 +11,6 @@ import { initializeApp } from "firebase/app";
+ import {
+   getFirestore,
+   doc,
+-  getDoc,
+   runTransaction,
+   Bytes,
+ } from "firebase/firestore";
+@@ -260,13 +259,54 @@ export const loadFromFirebase = async (
+   roomKey: string,
+   socket: Socket | null,
+ ): Promise<readonly SyncableExcalidrawElement[] | null> => {
+-  const firestore = _getFirestore();
+-  const docRef = doc(firestore, "scenes", roomId);
+-  const docSnap = await getDoc(docRef);
+-  if (!docSnap.exists()) {
++  // Self-hosted: read the scene via the REST `documents:batchGet` endpoint
++  // instead of the Firebase SDK `getDoc`. `getDoc` opens a Firestore `Listen`
++  // WebChannel that our backend does not implement (responds 404), which makes
++  // the SDK retry with backoff and stalls the initial room load for several
++  // seconds before the scene appears. The REST endpoint returns the scene in
++  // ~10ms. Mirrors the access-gate `roomExists` (codiumAccessGate.ts).
++  let projectId = "";
++  try {
++    projectId = JSON.parse(import.meta.env.VITE_APP_FIREBASE_CONFIG).projectId;
++  } catch {
++    return null;
++  }
++  if (!projectId) {
++    return null;
++  }
++  // The document resource name must NOT carry the `/v1/` prefix (that prefix is
++  // only part of the HTTP path); it has to match exactly the key the Firebase
++  // SDK writes on commit, or the backend answers `missing`.
++  const docs = `projects/${projectId}/databases/(default)/documents`;
++  const name = `${docs}/scenes/${roomId}`;
++  let found: { fields?: Record<string, any> } | null = null;
++  try {
++    const res = await fetch(`/v1/${docs}:batchGet`, {
++      method: "POST",
++      headers: { "Content-Type": "text/plain" },
++      body: JSON.stringify({ documents: [name] }),
++    });
++    if (!res.ok) {
++      return null;
++    }
++    const data = await res.json();
++    found = (Array.isArray(data)
++      ? data.find((entry) => entry && entry.found)?.found
++      : null) as { fields?: Record<string, any> } | null;
++  } catch (error: any) {
++    console.error(error);
+     return null;
+   }
+-  const storedScene = docSnap.data() as FirebaseStoredScene;
++  const fields = found?.fields;
++  if (!fields?.ciphertext?.bytesValue || !fields?.iv?.bytesValue) {
++    // Missing document (new/empty room) or unexpected shape: let peers sync us.
++    return null;
++  }
++  const storedScene: FirebaseStoredScene = {
++    sceneVersion: Number(fields.sceneVersion?.integerValue ?? 0),
++    ciphertext: Bytes.fromBase64String(fields.ciphertext.bytesValue),
++    iv: Bytes.fromBase64String(fields.iv.bytesValue),
++  };
+   const elements = getSyncableElements(
+     restoreElements(await decryptElements(storedScene, roomKey), null, {
+       deleteInvisibleElements: true,

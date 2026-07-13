@@ -16,6 +16,12 @@ RUN cd excalidraw && rm -f .git && git apply ../room-files-frontend.patch
 # (.git already removed above.)
 COPY create-gate-frontend.patch ./
 RUN cd excalidraw && git apply ../create-gate-frontend.patch
+# Self-hosted scene load: read the room scene via the REST `documents:batchGet`
+# endpoint instead of the Firebase SDK `getDoc`. `getDoc` opens a Firestore
+# `Listen` WebChannel our backend doesn't implement (404), which stalls the
+# initial room load for several seconds. Mirrors the access-gate roomExists.
+COPY scene-load-batchget-frontend.patch ./
+RUN cd excalidraw && git apply ../scene-load-batchget-frontend.patch
 # 构建前端
 RUN cd excalidraw && npm install -g pnpm && pnpm install && cd excalidraw-app && DISABLE_VITE_CHECKER=true pnpm build:app:docker
 
